@@ -1,11 +1,12 @@
 import numpy as np
 import pygame as pg
 from gameengine import LogicObject, CanvasObject
-from commons import color_theme
+from commons import color_theme, color_theme2
 
+color_themes = [color_theme, color_theme2]
 
 # Get color based on piece type id
-def get_color(i: int):
+def get_color(i: int, color_theme):
     match i:
         case 1:
             return color_theme.block_cyan
@@ -46,7 +47,7 @@ class Piece:
                     case 0:
                         cfg = 0x0F00
                     case 1:
-                        cfg = 0x222
+                        cfg = 0x2222
                     case 2:
                         cfg = 0x00F0
                     case 3:
@@ -149,8 +150,29 @@ class GameField(CanvasObject, LogicObject):
         self.next_pieces = []
         self.show_next = 6
 
-        self.timer = 0.0
-        self.delay = 1.0
+        self.fall_delay = 1.0
+        self.fall_timer = 0.0
+        self.rotation_delay = 0.1
+        self.rotation_timer = 0.0
+        self.move_delay = 0.1
+        self.move_timer = 0.0
+
+        self.left_pressed = False
+        self.left_just_pressed = False
+        self.right_pressed = False
+        self.right_just_pressed = False
+        self.down_pressed = False
+        self.down_just_pressed = False
+        self.up_pressed = False
+        self.up_just_pressed = False
+        self.space_pressed = False
+        self.space_just_pressed = False
+        self.q_pressed = False
+        self.q_just_pressed = False
+        self.e_pressed = False
+        self.e_just_pressed = False
+        self.color_theme = 1
+
         self.game_started = False
         self.game_over = False
 
@@ -184,12 +206,14 @@ class GameField(CanvasObject, LogicObject):
 
     def __clean_row(self, row):
         self.field[row, :] = 0
-        self.field[0:row, :] = np.roll(self.field[0:row, :], 1, axis=0)
+        # Shift all rows above down
+        self.field[:row+1, :] = np.roll(self.field[:row+1, :], 1, axis=0)
+        # self.field[0:row, :] = np.roll(self.field[0:row], 1, axis=0)
 
     # Called only when a piece is placed
     def __clean_rows(self):
         for row in range(self.rows):
-            # Does 0 exist in the row?
+            # Are all pieces non-zero?
             if np.all(self.field[row, :]):
                 self.__clean_row(row)
 
@@ -215,14 +239,16 @@ class GameField(CanvasObject, LogicObject):
     def spawn_piece(self):
         # at x 3
         self.piece_x = self.cols // 2 - 2
+        print(self.piece_x)
         # at y 20
-        self.piece_y = self.cols // 2
+        self.piece_y = self.rows // 2
+        print(self.piece_y)
         # Block out
         if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
             self.game_over = True
             self.game_started = False
+            self.can_switch = False
             print("Game over")
-        self.can_switch = True
 
     def place_piece(self, piece: Piece, x, y):
         cfg = piece.cfg
@@ -230,6 +256,12 @@ class GameField(CanvasObject, LogicObject):
         for i in range(16):
             if (cfg >> i) & 1:
                 self.set_show_field(x + 3 - i % 4, y + i // 4, piece.type_id)
+
+    def show_ghost(self):
+        ghost_y = self.piece_y
+        while self.__can_place_piece(self.last_piece, self.piece_x, ghost_y - 1):
+            ghost_y -= 1
+        self.place_piece(self.last_piece, self.piece_x, ghost_y)
 
     def lock_piece(self, piece: Piece, x, y):
         cfg = piece.cfg
@@ -246,6 +278,7 @@ class GameField(CanvasObject, LogicObject):
             print("Game over (lock out)")
         else:
             self.__clean_rows()
+            self.can_switch = True
 
     # Used to de-spawn the active piece from the board (e.g. when switching)
     def hide_piece(self):
@@ -260,6 +293,7 @@ class GameField(CanvasObject, LogicObject):
 
     # Switches, de-spawns, spawns and places piece
     def switch_piece(self):
+        print("YO")
         if self.reserve_piece is None:
             self.reserve_piece = self.last_piece
             self.__replace_from_bag()
@@ -267,6 +301,7 @@ class GameField(CanvasObject, LogicObject):
             tmp_piece = self.last_piece
             self.last_piece = self.reserve_piece
             self.reserve_piece = tmp_piece
+            print(self.reserve_piece)
         self.reset_show_field()
         self.spawn_piece()
         self.place_piece(self.last_piece, self.piece_x, self.piece_y)
@@ -280,10 +315,12 @@ class GameField(CanvasObject, LogicObject):
         return True
 
     def update(self, dt):
-        self.timer += dt
+        self.fall_timer += dt
+        self.rotation_timer += dt
+        self.move_timer += dt
         # If one delay has passed, move the piece down
-        if not self.game_over and self.timer > self.delay:
-            self.timer = 0.0
+        if not self.game_over and self.fall_timer > self.fall_delay:
+            self.fall_timer = 0.0
             # Game just started, spawn a piece
             if not self.game_started:
                 print("Game started")
@@ -305,49 +342,124 @@ class GameField(CanvasObject, LogicObject):
                 self.place_piece(self.last_piece, self.piece_x, self.piece_y)
 
         # User input
+        # todo: move to commons
         keys = pg.key.get_pressed()
         if keys[pg.K_LEFT]:
-            self.rect.x -= 10 * dt
-            if self.__can_place_piece(self.last_piece, self.piece_x - 1, self.piece_y):
-                self.reset_show_field()
-                self.piece_x -= 1
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+            if not self.left_pressed:
+                self.left_just_pressed = True
+            else:
+                self.left_just_pressed = False
+            self.left_pressed = True
+        else:
+            self.left_pressed = False
+
         if keys[pg.K_RIGHT]:
-            if self.__can_place_piece(self.last_piece, self.piece_x + 1, self.piece_y):
-                self.reset_show_field()
-                self.piece_x += 1
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+            if not self.right_pressed:
+                self.right_just_pressed = True
+            else:
+                self.right_just_pressed = False
+            self.right_pressed = True
+        else:
+            self.right_pressed = False
+
         if keys[pg.K_DOWN]:
-            if self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y - 1):
-                self.reset_show_field()
-                self.piece_y -= 1
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+            if not self.down_pressed:
+                self.down_just_pressed = True
+            else:
+                self.down_just_pressed = False
+            self.down_pressed = True
+        else:
+            self.down_pressed = False
+
+        if keys[pg.K_UP]:
+            if not self.up_pressed:
+                self.up_just_pressed = True
+            else:
+                self.up_just_pressed = False
+            self.up_pressed = True
+        else:
+            self.up_pressed = False
+
+        if keys[pg.K_SPACE]:
+            if not self.space_pressed:
+                self.space_just_pressed = True
+            else:
+                self.space_just_pressed = False
+            self.space_pressed = True
+        else:
+            self.space_pressed = False
         if keys[pg.K_q]:
+            if not self.q_pressed:
+                self.q_just_pressed = True
+            else:
+                self.q_just_pressed = False
+            self.q_pressed = True
+        else:
+            self.q_pressed = False
+
+        if keys[pg.K_e]:
+            if not self.e_pressed:
+                self.e_just_pressed = True
+            else:
+                self.e_just_pressed = False
+            self.e_pressed = True
+        else:
+            self.e_pressed = False
+
+        if self.move_timer > self.move_delay:
+            if self.left_pressed:
+                if self.__can_place_piece(self.last_piece, self.piece_x - 1, self.piece_y):
+                    self.move_timer = 0.0
+                    self.reset_show_field()
+                    self.piece_x -= 1
+                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+
+            if self.right_pressed:
+                if self.__can_place_piece(self.last_piece, self.piece_x + 1, self.piece_y):
+                    self.move_timer = 0.0
+                    self.reset_show_field()
+                    self.piece_x += 1
+                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+
+            if self.down_pressed:
+                if self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y - 1):
+                    self.move_timer = 0.0
+                    self.reset_show_field()
+                    self.piece_y -= 1
+                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+
+        if self.q_just_pressed:
             self.last_piece.rotate_counterclockwise()
             if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
                 self.last_piece.rotate_clockwise()
-        if keys[pg.K_e]:
+            else:
+                self.rotation_timer = 0.0
+        if self.e_just_pressed:
             self.last_piece.rotate_clockwise()
             if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
                 self.last_piece.rotate_counterclockwise()
-        if keys[pg.K_SPACE]:
+            else:
+                self.rotation_timer = 0.0
+        if self.space_just_pressed:
+            print(f"Can switch: {self.can_switch}")
             if self.can_switch:
                 self.can_switch = False
                 self.switch_piece()
 
     def draw(self):
-        self.image.fill(color_theme.block_red)
+        self.image.fill(color_theme.background)
         for y in range(self.rows):
             for x in range(self.cols):
-                color = get_color(self.get(x, y))
+                color = get_color(self.get(x, y), color_themes[self.color_theme])
                 pg.draw.rect(self.image, color,
                              [(self.block_margin + self.block_size) * x + self.block_margin,
-                              ((self.block_margin + self.block_size) * (self.rows-y+1) + self.block_margin),
+                              ((self.block_margin + self.block_size) * (self.rows-y-1) + self.block_margin),
                               self.block_size, self.block_size])
                 show_field_color_index = self.get_show_field(x, y)
+                color = get_color(show_field_color_index, color_themes[self.color_theme])
                 # TODO: fix color of falling piece
                 if show_field_color_index != 0:
                     pg.draw.rect(self.image, color,
                                  [(self.block_margin + self.block_size) * x + self.block_margin,
-                                  ((self.block_margin + self.block_size) * (self.rows - y+1) + self.block_margin),
+                                  ((self.block_margin + self.block_size) * (self.rows - y-1) + self.block_margin),
                                   self.block_size, self.block_size])
