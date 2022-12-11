@@ -34,3 +34,16 @@ color_theme = ColorTheme("default", {
     "empty": (255, 255, 255),
     "background": (120, 120, 120)
 })
+
+color_theme2 = ColorTheme("dark", {
+    "block_cyan": (255, 165, 0),
+    "block_blue": (0, 255, 0),
+    "block_orange": (0, 255, 255),
+    "block_yellow": (255, 255, 0),
+    "block_green": (0, 0, 255),
+    "block_purple": (255, 0, 0),
+    "block_red": (128, 0, 128),
+    "block_grey": (128, 128, 128),
+    "empty": (255, 255, 255),
+    "background": (0, 0, 0)
+})
