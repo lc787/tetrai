@@ -24,7 +24,6 @@ def draw(screen: pg.Surface):
     for obj in commons.CANVAS_OBJECTS:
         obj.draw()
         screen.blit(obj.image, obj.rect)
-        print(obj.rect)
     pg.display.flip()
 
 
@@ -40,7 +39,7 @@ def init_objs():
     background = CanvasObject(0, 0, commons.width, commons.height)
     background.image.fill(commons.color_theme.background)
     background.draw_level = 0
-    game_field = GameField(commons.width // 3, - 2 * commons.height, 10, 40, 32, 2)
+    game_field = GameField(commons.width // 3, - 0.75*commons.height, 10, 40, 24, 2)
     game_field.draw_level = 1
 
 
