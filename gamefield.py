@@ -5,6 +5,7 @@ from commons import color_theme, color_theme2
 
 color_themes = [color_theme, color_theme2]
 
+
 # Get color based on piece type id
 def get_color(i: int, color_theme):
     match i:
@@ -34,7 +35,6 @@ class Piece:
     def __init__(self, piece_type: str, rotation: int):
         self.piece_type = piece_type
         self.rotation = rotation
-
 
     @property
     def cfg(self):
@@ -145,9 +145,9 @@ class GameField(CanvasObject, LogicObject):
         self.rows = rows
         self.field = np.zeros((self.rows, self.cols), dtype=np.int8)
         # A collision-less field to draw the piece that is currently falling
-        self.show_field = np.zeros((self.rows, self.cols), dtype=np.int8)
+        self.ghost_field = np.zeros((self.rows, self.cols), dtype=np.int8)
 
-        self.next_pieces = []
+        self.bag = []
         self.show_next = 6
 
         self.fall_delay = 1.0
@@ -156,6 +156,8 @@ class GameField(CanvasObject, LogicObject):
         self.rotation_timer = 0.0
         self.move_delay = 0.1
         self.move_timer = 0.0
+        self.hard_drop_delay = 0.6
+        self.hard_drop_timer = 0.0
 
         self.left_pressed = False
         self.left_just_pressed = False
@@ -176,7 +178,10 @@ class GameField(CanvasObject, LogicObject):
         self.game_started = False
         self.game_over = False
 
-        self.last_piece = None
+        # Actions refer to successful user inputs
+        self.registered_actions_queue = [{"type": "game", "game": "start"}]
+        self.max_registered_actions_queue = 10
+        self.current_piece = None
         self.piece_x = 0
         self.piece_y = 0
         self.reserve_piece = None
@@ -190,53 +195,77 @@ class GameField(CanvasObject, LogicObject):
         height = rows * (block_size + block_margin) + block_margin
         super(GameField, self).__init__(x, y, width, height)
 
-    def set(self, x, y, value: int):
+    """Action queue"""
+
+    def register_action(self, action):
+        if len(self.registered_actions_queue) == self.max_registered_actions_queue:
+            self.registered_actions_queue.pop(0)
+        self.registered_actions_queue.append(action)
+        print(f"Registered action: {action}")
+
+    def get_last_action(self):
+        return self.registered_actions_queue[-1]
+
+    """Game field"""
+
+    def set_field(self, x, y, value: int):
         self.field[self.rows - y - 1, x] = value
 
-    def get(self, x, y):
+    def get_field(self, x, y):
         if x < 0 or x >= self.cols or y < 0 or y >= self.rows:
             return -1
         return self.field[self.rows - y - 1, x]
 
-    def set_show_field(self, x, y, value: int):
-        self.show_field[self.rows - y - 1, x] = value
+    def reset_field(self):
+        self.field = np.zeros((self.rows, self.cols), dtype=np.int8)
 
-    def get_show_field(self, x, y):
-        return self.show_field[self.rows - y - 1, x]
-
-    def __clean_row(self, row):
+    def clean_row(self, row):
         self.field[row, :] = 0
         # Shift all rows above down
-        self.field[:row+1, :] = np.roll(self.field[:row+1, :], 1, axis=0)
-        # self.field[0:row, :] = np.roll(self.field[0:row], 1, axis=0)
+        self.field[:row + 1, :] = np.roll(self.field[:row + 1, :], 1, axis=0)
 
-    # Called only when a piece is placed
-    def __clean_rows(self):
+    # Should be called only when a piece is locked
+    def clean_rows(self):
+        cleaned_rows = 0
         for row in range(self.rows):
             # Are all pieces non-zero?
             if np.all(self.field[row, :]):
-                self.__clean_row(row)
+                self.clean_row(row)
+                cleaned_rows += 1
+        return cleaned_rows
 
-    # Extend the next pieces list when needed
-    def __extend_bag(self):
-        # Standard ruleset
-        piece_bag = ["I", "I", "J", "J", "L", "L", "O", "O", "S", "S", "T", "T", "Z", "Z"]
-        np.random.shuffle(piece_bag)
-        self.next_pieces.extend(piece_bag)
+    """Ghost field"""
+
+    def set_ghost_field(self, x, y, value: int):
+        self.ghost_field[self.rows - y - 1, x] = value
+
+    def get_ghost_field(self, x, y):
+        if x < 0 or x >= self.cols or y < 0 or y >= self.rows:
+            return -1
+        return self.ghost_field[self.rows - y - 1, x]
+
+    def reset_ghost_field(self):
+        self.ghost_field = np.zeros((self.rows, self.cols), dtype=np.int8)
+
+    """Piece Bag"""
 
     # Replace current piece with the next one in the bag
-    def __replace_from_bag(self):
+    def pop_bag(self):
         # If there are not enough pieces to show, extend the bag
-        if len(self.next_pieces) <= self.show_next:
-            self.__extend_bag()
-        self.last_piece = Piece(self.next_pieces.pop(0), 0)
+        if len(self.bag) <= self.show_next:
+            batch = ["I", "I", "J", "J", "L", "L", "O", "O", "S", "S", "T", "T", "Z", "Z"]
+            np.random.shuffle(batch)
+            self.bag.extend(batch)
+        self.current_piece = Piece(self.bag.pop(0), 0)
 
-    # Get the next piece in the bag
-    def get_next_pieces(self):
-        return self.next_pieces[:self.show_next]
+    # Get the next pieces in the bag
+    def peek_bag(self):
+        return self.bag[:self.show_next]
+
+    """Pieces"""
 
     # Spawns current piece. 'spawn' doesn't imply that the piece is placed on the field
-    def spawn_piece(self):
+    def reset_piece(self):
         # at x 3
         self.piece_x = self.cols // 2 - 2
         print(self.piece_x)
@@ -244,7 +273,7 @@ class GameField(CanvasObject, LogicObject):
         self.piece_y = self.rows // 2
         print(self.piece_y)
         # Block out
-        if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
+        if not self.__can_place_piece(self.current_piece, self.piece_x, self.piece_y):
             self.game_over = True
             self.game_started = False
             self.can_switch = False
@@ -252,16 +281,16 @@ class GameField(CanvasObject, LogicObject):
 
     def place_piece(self, piece: Piece, x, y):
         cfg = piece.cfg
-        self.reset_show_field()
+        self.reset_ghost_field()
         for i in range(16):
             if (cfg >> i) & 1:
-                self.set_show_field(x + 3 - i % 4, y + i // 4, piece.type_id)
+                self.set_ghost_field(x + 3 - i % 4, y + i // 4, piece.type_id)
 
     def show_ghost(self):
         ghost_y = self.piece_y
-        while self.__can_place_piece(self.last_piece, self.piece_x, ghost_y - 1):
+        while self.__can_place_piece(self.current_piece, self.piece_x, ghost_y - 1):
             ghost_y -= 1
-        self.place_piece(self.last_piece, self.piece_x, ghost_y)
+        self.place_piece(self.current_piece, self.piece_x, ghost_y)
 
     def lock_piece(self, piece: Piece, x, y):
         cfg = piece.cfg
@@ -271,47 +300,61 @@ class GameField(CanvasObject, LogicObject):
             if (cfg >> i) & 1:
                 if y + i // 4 < 20:
                     lock_out = False
-                self.set(x + 3 - i % 4, y + i // 4, piece.type_id)
+                self.set_field(x + 3 - i % 4, y + i // 4, piece.type_id)
         if lock_out:
             self.game_over = True
             self.game_started = False
             print("Game over (lock out)")
         else:
-            self.__clean_rows()
+            self.register_action({"type": "piece", "piece": "lock", "piece_type": piece.piece_type})
+            cleaned = self.clean_rows()
+            if cleaned > 0:
+                action = {"type": "line_clear", "line_clear": "cleaned", "cleaned": cleaned, "special": False}
+                if cleaned >= 2 and piece.piece_type == 'T':
+                    last_action = self.get_last_action()
+                    # TODO: what if queue is filled with something else by the time we get here?
+                    if last_action['type'] == 'piece' and last_action['piece'] == 'rotate':
+                        # TODO: check for 3 corners out of 4 to be occupied for 3-corner T-slot
+                        action['special'] = True
+                        action.update({"special_type": "immobile T-spin"})
+                self.register_action(action)
             self.can_switch = True
 
     # Used to de-spawn the active piece from the board (e.g. when switching)
     def hide_piece(self):
-        if self.last_piece is not None:
-            cfg = self.last_piece.cfg
+        if self.current_piece is not None:
+            cfg = self.current_piece.cfg
             for i in range(16):
                 if (cfg >> i) & 1:
-                    self.set_show_field(self.piece_x + 3 - i % 4, self.piece_y + i // 4, 0)
-
-    def reset_show_field(self):
-        self.show_field = np.zeros((self.rows, self.cols), dtype=np.int8)
+                    self.set_ghost_field(self.piece_x + 3 - i % 4, self.piece_y + i // 4, 0)
 
     # Switches, de-spawns, spawns and places piece
     def switch_piece(self):
-        print("YO")
         if self.reserve_piece is None:
-            self.reserve_piece = self.last_piece
-            self.__replace_from_bag()
+            self.reserve_piece = self.current_piece
+            self.pop_bag()
         else:
-            tmp_piece = self.last_piece
-            self.last_piece = self.reserve_piece
+            tmp_piece = self.current_piece
+            self.current_piece = self.reserve_piece
             self.reserve_piece = tmp_piece
-            print(self.reserve_piece)
-        self.reset_show_field()
-        self.spawn_piece()
-        self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+        self.register_action({"type": "piece", "piece": "switch"})
+        self.reset_ghost_field()
+        self.reset_piece()
+        self.place_piece(self.current_piece, self.piece_x, self.piece_y)
 
     def __can_place_piece(self, piece: Piece, x, y):
         cfg = piece.cfg
         for i in range(16):
             if (cfg >> i) & 1:
-                if self.get(x + 3 - i % 4, y + i // 4) != 0:
+                if self.get_field(x + 3 - i % 4, y + i // 4) != 0:
                     return False
+        return True
+
+    # If it can place the piece, place it and return True. False otherwise
+    def try_place_piece(self, piece: Piece, x, y):
+        if not self.__can_place_piece(piece, x, y):
+            return False
+        self.place_piece(piece, x, y)
         return True
 
     def update(self, dt):
@@ -324,22 +367,22 @@ class GameField(CanvasObject, LogicObject):
             # Game just started, spawn a piece
             if not self.game_started:
                 print("Game started")
-                self.__replace_from_bag()
-                self.spawn_piece()
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                self.pop_bag()
+                self.reset_piece()
+                self.place_piece(self.current_piece, self.piece_x, self.piece_y)
                 self.game_started = True
             # Piece falls
-            elif self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y - 1):
-                self.reset_show_field()
+            elif self.__can_place_piece(self.current_piece, self.piece_x, self.piece_y - 1):
+                self.reset_ghost_field()
                 self.piece_y -= 1
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                self.place_piece(self.current_piece, self.piece_x, self.piece_y)
             # If the piece can't fall, place it and spawn a new one
             else:
-                self.reset_show_field()
-                self.lock_piece(self.last_piece, self.piece_x, self.piece_y)
-                self.__replace_from_bag()
-                self.spawn_piece()
-                self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                self.reset_ghost_field()
+                self.lock_piece(self.current_piece, self.piece_x, self.piece_y)
+                self.pop_bag()
+                self.reset_piece()
+                self.place_piece(self.current_piece, self.piece_x, self.piece_y)
 
         # User input
         # todo: move to commons
@@ -408,40 +451,61 @@ class GameField(CanvasObject, LogicObject):
 
         if self.move_timer > self.move_delay:
             if self.left_pressed:
-                if self.__can_place_piece(self.last_piece, self.piece_x - 1, self.piece_y):
+                if self.__can_place_piece(self.current_piece, self.piece_x - 1, self.piece_y):
                     self.move_timer = 0.0
-                    self.reset_show_field()
+                    self.reset_ghost_field()
                     self.piece_x -= 1
-                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                    self.place_piece(self.current_piece, self.piece_x, self.piece_y)
+                    self.register_action({"type": "piece", "piece": "move", "move": "left"})
 
             if self.right_pressed:
-                if self.__can_place_piece(self.last_piece, self.piece_x + 1, self.piece_y):
+                if self.__can_place_piece(self.current_piece, self.piece_x + 1, self.piece_y):
                     self.move_timer = 0.0
-                    self.reset_show_field()
+                    self.reset_ghost_field()
                     self.piece_x += 1
-                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                    self.place_piece(self.current_piece, self.piece_x, self.piece_y)
+                    self.register_action({"type": "piece", "piece": "move", "move": "right"})
 
             if self.down_pressed:
-                if self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y - 1):
+                if self.__can_place_piece(self.current_piece, self.piece_x, self.piece_y - 1):
                     self.move_timer = 0.0
-                    self.reset_show_field()
+                    self.reset_ghost_field()
                     self.piece_y -= 1
-                    self.place_piece(self.last_piece, self.piece_x, self.piece_y)
+                    self.place_piece(self.current_piece, self.piece_x, self.piece_y)
+                    self.register_action({"type": "piece", "piece": "move", "move": "down"})
 
         if self.q_just_pressed:
-            self.last_piece.rotate_counterclockwise()
-            if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
-                self.last_piece.rotate_clockwise()
-            else:
+            self.current_piece.rotate_counterclockwise()
+            placed = True
+            # Simple wall kick algorithm
+            if not self.__can_place_piece(self.current_piece, self.piece_x, self.piece_y):
+                if self.__can_place_piece(self.current_piece, self.piece_x + 1, self.piece_y):
+                    self.place_piece(self.current_piece, self.piece_x + 1, self.piece_y)
+                elif self.__can_place_piece(self.current_piece, self.piece_x - 1, self.piece_y):
+                    self.place_piece(self.current_piece, self.piece_x - 1, self.piece_y)
+                else:
+                    self.current_piece.rotate_clockwise()
+                    placed = False
+            if placed:
+                print("HI")
+                self.register_action({"type": "piece", "piece": "rotate", "direction": "counterclockwise"})
                 self.rotation_timer = 0.0
         if self.e_just_pressed:
-            self.last_piece.rotate_clockwise()
-            if not self.__can_place_piece(self.last_piece, self.piece_x, self.piece_y):
-                self.last_piece.rotate_counterclockwise()
-            else:
+            self.current_piece.rotate_clockwise()
+            placed = True
+            # Simple wall kick algorithm
+            if not self.__can_place_piece(self.current_piece, self.piece_x, self.piece_y):
+                if self.__can_place_piece(self.current_piece, self.piece_x + 1, self.piece_y):
+                    self.place_piece(self.current_piece, self.piece_x + 1, self.piece_y)
+                elif self.__can_place_piece(self.current_piece, self.piece_x - 1, self.piece_y):
+                    self.place_piece(self.current_piece, self.piece_x - 1, self.piece_y)
+                else:
+                    self.current_piece.rotate_counterclockwise()
+                    placed = False
+            if placed:
+                self.register_action({"type": "piece", "piece": "rotate", "direction": "clockwise"})
                 self.rotation_timer = 0.0
         if self.space_just_pressed:
-            print(f"Can switch: {self.can_switch}")
             if self.can_switch:
                 self.can_switch = False
                 self.switch_piece()
@@ -450,16 +514,16 @@ class GameField(CanvasObject, LogicObject):
         self.image.fill(color_theme.background)
         for y in range(self.rows):
             for x in range(self.cols):
-                color = get_color(self.get(x, y), color_themes[self.color_theme])
+                color = get_color(self.get_field(x, y), color_themes[self.color_theme])
                 pg.draw.rect(self.image, color,
                              [(self.block_margin + self.block_size) * x + self.block_margin,
-                              ((self.block_margin + self.block_size) * (self.rows-y-1) + self.block_margin),
+                              ((self.block_margin + self.block_size) * (self.rows - y - 1) + self.block_margin),
                               self.block_size, self.block_size])
-                show_field_color_index = self.get_show_field(x, y)
-                color = get_color(show_field_color_index, color_themes[self.color_theme])
+                ghost_field_color_index = self.get_ghost_field(x, y)
+                color = get_color(ghost_field_color_index, color_themes[self.color_theme])
                 # TODO: fix color of falling piece
-                if show_field_color_index != 0:
+                if ghost_field_color_index != 0:
                     pg.draw.rect(self.image, color,
                                  [(self.block_margin + self.block_size) * x + self.block_margin,
-                                  ((self.block_margin + self.block_size) * (self.rows - y-1) + self.block_margin),
+                                  ((self.block_margin + self.block_size) * (self.rows - y - 1) + self.block_margin),
                                   self.block_size, self.block_size])
