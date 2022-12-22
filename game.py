@@ -24,6 +24,8 @@ def update(dt):
 
 def draw(screen: pg.Surface):
     for obj in gameengine.CANVAS_OBJECTS[::-1]:
+        if obj.invisible:
+            continue
         obj.draw()
         screen.blit(obj.image, obj.rect)
     pg.display.flip()
@@ -39,11 +41,12 @@ def init_screen():
 
 def init_objs():
     background = CanvasObject(0, 0, commons.width, commons.height)
-    background.image.fill(commons.color_theme.background)
+    background.image.fill(commons.color_theme_default['palette']['background'])
     background.draw_level = 0
     cell_size = 24
-    cell_margin = 2
-    game_grid = grid.PlayField(commons.width // 2, commons.height // 2, 24, 2, commons.color_theme_default,
+    cell_margin = 1
+    game_grid = grid.PlayField(commons.width // 2, commons.height // 2, cell_size, cell_margin,
+                               commons.color_theme_default, commons.key_binds,
                                play_field_offset=(-((cell_size + cell_margin) * 5 + cell_margin // 2),
                                                   -((cell_size + cell_margin) * 30 + cell_margin // 2)),
                                hold_field_offset=(-((cell_size + cell_margin) * 11 + cell_margin // 2),
