@@ -17,6 +17,7 @@ color_theme_default = {'name': "default", 'palette': {
     "block_red": (255, 0, 0),
     "block_grey": (128, 128, 128),
     "empty": (255, 255, 255),
+    "text": (0, 0, 0),
     "background": (120, 120, 120)
 }}
 
@@ -29,4 +30,6 @@ key_binds = {
     'left': Key(pg.K_LEFT),
     'right': Key(pg.K_RIGHT),
     '180': Key(pg.K_p),
+    'pause': Key(pg.K_ESCAPE),
+    'restart': Key(pg.K_r),
 }
