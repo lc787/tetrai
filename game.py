@@ -2,7 +2,6 @@ import pygame as pg
 import commons
 import gameengine
 import grid
-from gamefield import GameField
 from gameengine import CanvasObject, Key
 
 
