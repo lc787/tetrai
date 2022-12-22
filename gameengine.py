@@ -21,6 +21,7 @@ class CanvasObject:
             self.image = image
         self.rect: Rect = self.image.get_rect()
         self.rect.move_ip(x, y)
+        self.invisible = False
         super(CanvasObject, self).__init__()
         CANVAS_OBJECTS.append(self)
 
@@ -62,14 +63,14 @@ class Event:
 class Notifier:
     def __init__(self):
         if len(NOTIFIERS.keys()) == 0:
-            self.id = 0
+            self.notifier_id = 0
         else:
-            self.id = int(max(NOTIFIERS.keys())) + 1
-        NOTIFIERS[self.id] = {}
+            self.notifier_id = int(max(NOTIFIERS.keys())) + 1
+        NOTIFIERS[self.notifier_id] = {}
 
     def notify(self, event: Event = Event()):
         """Notifies all subscribed listeners"""
-        items = NOTIFIERS[self.id].items()
+        items = NOTIFIERS[self.notifier_id].items()
         for listener_id, methods in items:
             listener = LISTENERS[listener_id]
             if listener is not None:
@@ -77,28 +78,28 @@ class Notifier:
                     method(listener)
 
     def connect(self, event: Event, listener, method):
-        if listener.id not in NOTIFIERS[self.id].keys():
-            NOTIFIERS[self.id][listener.id] = [method]
+        if listener.listener_id not in NOTIFIERS[self.notifier_id].keys():
+            NOTIFIERS[self.notifier_id][listener.listener_id] = [method]
         else:
-            NOTIFIERS[self.id][listener.id].append(method)
+            NOTIFIERS[self.notifier_id][listener.listener_id].append(method)
 
     def kill(self):
-        NOTIFIERS[self.id] = {}
+        NOTIFIERS[self.notifier_id] = {}
 
 
 class Listener:
     def __init__(self):
         if len(LISTENERS.keys()) == 0:
-            self.id = 0
+            self.listener_id = 0
         else:
-            self.id = int(max(LISTENERS.keys())) + 1
-        LISTENERS[self.id] = self
+            self.listener_id = int(max(LISTENERS.keys())) + 1
+        LISTENERS[self.listener_id] = self
 
     def kill(self):
         for notifier_id in NOTIFIERS.keys():
-            if self.id in NOTIFIERS[notifier_id]:
-                NOTIFIERS[notifier_id].pop(self.id)
-        LISTENERS.pop(self.id)
+            if self.listener_id in NOTIFIERS[notifier_id]:
+                NOTIFIERS[notifier_id].pop(self.listener_id)
+        LISTENERS.pop(self.listener_id)
 
 
 class Timer(Notifier, LogicObject):
@@ -140,13 +141,13 @@ class Key(LogicObject):
     """Describes state of key"""
 
     def __init__(self, key_id: int):
-        self.id = key_id
+        self.key_id = key_id
         self.pressed = False
         self.just_pressed = False
         LogicObject.__init__(self)
 
     def update(self, dt: float):
-        if KEYS[self.id]:
+        if KEYS[self.key_id]:
             if not self.pressed:
                 self.just_pressed = True
             else:
