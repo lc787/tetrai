@@ -2,7 +2,7 @@ import numpy as np
 import pygame as pg
 
 import commons
-from gameengine import CanvasObject, Listener, Timer, LogicObject, Event
+from gameengine import CanvasObject, Listener, Timer, LogicObject, Event, Notifier
 
 
 def piece_color(piece_type: int, theme):
@@ -176,17 +176,18 @@ class DisplayGrid(Grid, CanvasObject):
     def set_theme(self, theme):
         self.theme = theme
 
-    def show_piece(self, piece_type, rotation: Rotation, x, y):
+    def show_piece(self, piece_type, rotation: Rotation, x, y, color_override=None):
         """Write a tetronimo to the grid. Unsafe, no bound-checking."""
         cfg = piece_cfg(piece_type, rotation)
         for i in range(16):
             if (cfg >> i) & 1:
+                piece_type = color_override if color_override is not None else piece_type
                 self.set(x + 3 - i % 4, y + i // 4, piece_type)
 
-    def reset_and_show_piece(self, piece_type, rotation: Rotation, x, y):
+    def reset_and_show_piece(self, piece_type, rotation: Rotation, x, y, color_override=None):
         """Reset grid to all zeros and write a tetronimo to it. Unsafe, no bound-checking."""
         self.reset()
-        self.show_piece(piece_type, rotation, x, y)
+        self.show_piece(piece_type, rotation, x, y, color_override=color_override)
 
     def can_show_piece(self, piece_type, rotation: Rotation, x, y):
         """Check if a tetronimo can be written to the grid. Safe."""
@@ -209,13 +210,17 @@ class DisplayGrid(Grid, CanvasObject):
 
 
 class PlayField(Listener, LogicObject):
-    def __init__(self, x, y, block_size, block_margin, theme,
+    def __init__(self, x, y, block_size, block_margin, theme, key_map=commons.key_binds,
                  play_field_offset: tuple = (0, 0), hold_field_offset: tuple = (0, 0),
-                 next_field_offset: tuple = (0, 0)):
+                 next_field_offset: tuple = (0, 0),
+                 environment=None):
         LogicObject.__init__(self)
         Listener.__init__(self)
         self.cols = 10
         self.rows = 40
+        self.theme = theme
+
+        # Init fields
         self.game_field = DisplayGrid(x + play_field_offset[0], y + play_field_offset[1], self.cols, self.rows,
                                       block_size, block_margin, theme)
         self.game_field.draw_level = 1
@@ -233,36 +238,54 @@ class PlayField(Listener, LogicObject):
         next_fields_margin = 0
         self.next_fields = [DisplayGrid(x + next_field_offset[0],
                                         y + next_field_offset[1] + i * 4 * (
-                                                    block_size + next_fields_margin) + 3 * next_fields_margin,
+                                                block_size + next_fields_margin) + 3 * next_fields_margin,
                                         4, 4, block_size, next_fields_margin, theme, transparent_mode=True)
                             for i in range(self.max_next_pieces)]
         for field in self.next_fields:
             field.draw_level = 4
 
+        # Init game timers
         self.fall_timer = Timer(0.2)
         self.lock_timer = Timer(0.5, auto_start=False)
         self.rotation_timer = Timer(0.1)
         self.move_timer = Timer(0.1)
         self.fast_move_timer = Timer(0.01)
+        self.delta_points_render_timer = Timer(2, auto_start=False)
 
         # Used keys
-        self.k_clockwise = commons.key_binds['clockwise']
-        self.k_counter_clockwise = commons.key_binds['counter_clockwise']
-        self.k_switch = commons.key_binds['switch']
-        self.k_hard_drop = commons.key_binds['hard_drop']
-        self.k_soft_drop = commons.key_binds['soft_drop']
-        self.k_left = commons.key_binds['left']
-        self.k_right = commons.key_binds['right']
-        self.k_180 = commons.key_binds['180']
+        self.k_clockwise = key_map['clockwise']
+        self.k_counter_clockwise = key_map['counter_clockwise']
+        self.k_switch = key_map['switch']
+        self.k_hard_drop = key_map['hard_drop']
+        self.k_soft_drop = key_map['soft_drop']
+        self.k_left = key_map['left']
+        self.k_right = key_map['right']
+        self.k_180 = key_map['180']
+        self.k_restart = key_map['restart']
+        self.k_pause = key_map['pause']
 
         # Game flags
         self.game_started = False
         self.game_over = False
+        self.game_paused = False
         self.can_switch = True
         self.ghost_mode = True
         self.lock_requests = 0
         self.max_lock_requests = 15
+
+        # Game state
+        font = pg.font.SysFont('Arial', 20)
+        score_render = font.render('Score: 0', True, theme['palette']['text'])
+        delta_score_render = font.render('+0', True, theme['palette']['text'])
+        self.score_panel = CanvasObject(x-300, y, image=score_render)
+        self.score_panel.draw_level = 5
+        self.delta_score_panel = CanvasObject(x-300, y+20, image=delta_score_render)
+        self.delta_score_panel.draw_level = 5
+        self.delta_score_panel.invisible = True
         self.score = 0
+        self.level = 1
+        self.last_move_name = None
+        self.last_action = None
 
         # Pieces
         self.current_piece_type = None
@@ -274,6 +297,10 @@ class PlayField(Listener, LogicObject):
         # Connect stuff after everything is initialised
         self.fall_timer.connect(Event("timeout"), self, self.on_natural_drop_piece)
         self.lock_timer.connect(Event("timeout"), self, self.on_lock_delay)
+        self.delta_points_render_timer.connect(Event("timeout"), self, self.on_delta_score_render_timeout)
+        # Connect clear lines event
+        # self.connect(Event())
+
         # Start!
         self.start_game()
 
@@ -295,9 +322,10 @@ class PlayField(Listener, LogicObject):
         return cleaned_rows
 
     # Piece bag
-    def pop_bag(self):
+    def pop_bag(self, enable_switch=True):
         """Return the next pieces from the bag"""
-        self.can_switch = True
+        if enable_switch:
+            self.can_switch = True
         # If there are not enough pieces to show, extend the bag
         if len(self.bag) <= self.max_next_pieces + 1:
             batch = ["I", "I", "J", "J", "L", "L", "O", "O", "S", "S", "T", "T", "Z", "Z"]
@@ -314,7 +342,7 @@ class PlayField(Listener, LogicObject):
         for i, field in enumerate(self.next_fields):
             field.reset_and_show_piece(next_pieces[i], Rotation(0), 0, 0)
 
-    # Piece logic
+    # Piece and score logic
     def lock_piece(self):
         cfg = piece_cfg(self.current_piece_type, self.current_piece_rotation)
         # Lock out flag. If it's above the vanish zone in its entirety (y = 20), it's game over
@@ -328,21 +356,71 @@ class PlayField(Listener, LogicObject):
                 self.game_field.set(x, y, self.current_piece_type)
         if lock_out:
             self.game_over = True
-            self.game_started = False
+            self.pause()
         else:
             rows = self.clean_rows()
-            if rows:
-                self.score += rows * 100
+            if rows != 0:
+                self.set_score(rows, self.current_piece_type)
 
             self.spawn_piece(piece_type=self.pop_bag())
+
+    def on_delta_score_render_timeout(self, event: Event = None):
+        self.delta_points_render_timer.pause()
+        self.delta_score_panel.invisible = True
+
+    def set_score(self, rows, last_piece_type):
+        drop_multiplier = 1
+        if self.last_move_name == "hard_drop":
+            drop_multiplier = 2
+        if self.last_move_name == "rotate" and last_piece_type == ord('T'):
+            # TODO: Implement T-spin detection
+            pass
+        delta_points = 0
+        match rows:
+            case 1:
+                delta_points = 100 * self.level
+                self.last_move_name = "Single"
+            case 2:
+                delta_points = 300 * self.level
+                self.last_move_name = "Double"
+            case 3:
+                delta_points = 500 * self.level
+                self.last_move_name = "Triple"
+            case 4:
+                if self.last_move_name == "Tetris" or self.last_move_name == "B2B Tetris":
+                    delta_points = 1200 * self.level
+                    self.last_move_name = "B2B Tetris"
+                else:
+                    delta_points = 800 * self.level
+                    self.last_move_name = "Tetris"
+        self.score += delta_points
+        self.score_panel.image = pg.font.SysFont('Arial', 20)\
+            .render(f'Score: {self.score}', True, self.theme['palette']['text'])
+        self.delta_score_panel.image = pg.font.SysFont('Arial', 20)\
+            .render(f'+{delta_points}', True, self.theme['palette']['text'])
+        self.delta_score_panel.invisible = False
+        self.delta_points_render_timer.reset()
+        return delta_points
+
+    def move_piece(self):
+        """Wrapper for normal & ghost piece placement"""
+        # Ghost
+        lowest_y = self.current_piece_y
+        while self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
+                                             self.current_piece_x, lowest_y - 1):
+            lowest_y -= 1
+        self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
+                                              self.current_piece_x, lowest_y, color_override=ord('X'))
+        # Normal
+        self.ghost_field.show_piece(self.current_piece_type, self.current_piece_rotation,
+                                    self.current_piece_x, self.current_piece_y)
 
     def on_natural_drop_piece(self, event: Event):
         """Gets called when the piece is supposed to fall. If there is no space left to fall, lock!"""
         if self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                           self.current_piece_x, self.current_piece_y - 1):
             self.current_piece_y -= 1
-            self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                  self.current_piece_x, self.current_piece_y)
+            self.move_piece()
             self.fall_timer.reset()
             self.request_lock()
 
@@ -353,11 +431,53 @@ class PlayField(Listener, LogicObject):
         self.current_piece_rotation = Rotation(0)
         self.current_piece_type = piece_type
 
-        self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                              self.current_piece_x, self.current_piece_y)
+        self.move_piece()
 
     def start_game(self):
+        # Init game
+        self.score = 0
+        self.game_started = True
+        self.game_over = False
+        self.level = 1
+
+        # Reset timers
+        self.fall_timer.reset()
+        self.lock_timer.reset()
+        self.rotation_timer.reset()
+        self.move_timer.reset()
+        self.fast_move_timer.reset()
+
+        # Reset fields
+        self.game_field.reset()
+        self.ghost_field.reset()
+        self.hold_field.reset()
+        for field in self.next_fields:
+            field.reset()
+
+        # Reset bag
+        self.bag = []
+        self.pop_bag()
+
+        self.hold_piece_type = None
+
+        # Spawn piece
         self.spawn_piece(self.pop_bag())
+
+    def pause(self):
+        self.fall_timer.pause()
+        self.lock_timer.pause()
+        self.rotation_timer.pause()
+        self.move_timer.pause()
+        self.fast_move_timer.pause()
+        self.game_paused = True
+
+    def resume(self):
+        self.fall_timer.resume()
+        self.lock_timer.resume()
+        self.rotation_timer.resume()
+        self.move_timer.resume()
+        self.fast_move_timer.resume()
+        self.game_paused = False
 
     def on_lock_delay(self, event: Event = None):
         """Gets called when the lock delay is over. Lock the piece."""
@@ -382,6 +502,7 @@ class PlayField(Listener, LogicObject):
         desired_rotation = Rotation(self.current_piece_rotation.get())
         move_command = False
         rotate_command = False
+        switch_command = False
         if self.k_soft_drop.pressed:
             desired_y -= 1
             move_command = True
@@ -401,47 +522,54 @@ class PlayField(Listener, LogicObject):
             desired_rotation.set_clockwise()
             desired_rotation.set_clockwise()
             rotate_command = True
-        if self.k_hard_drop.just_pressed:
+        if not self.game_paused and self.k_hard_drop.just_pressed:
             while self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                                  self.current_piece_x, self.current_piece_y - 1):
                 self.current_piece_y -= 1
+            self.last_move_name = "hard_drop"
             self.lock_piece()
-        elif self.k_switch.just_pressed and self.can_switch:
+
+        elif not self.game_paused and self.k_switch.just_pressed and self.can_switch:
             self.can_switch = False
             if self.hold_piece_type is None:
                 self.hold_piece_type = self.current_piece_type
-                self.current_piece_type = self.pop_bag()
+                self.current_piece_type = self.pop_bag(enable_switch=False)
                 self.hold_field.reset_and_show_piece(self.hold_piece_type, Rotation(0), 0, 0)
                 self.spawn_piece(self.current_piece_type)
             else:
                 self.hold_piece_type, self.current_piece_type = self.current_piece_type, self.hold_piece_type
                 self.hold_field.reset_and_show_piece(self.hold_piece_type, Rotation(0), 0, 0)
                 self.spawn_piece(self.current_piece_type)
-
-        if move_command:
+            switch_command = True
+        if self.k_pause.just_pressed:
+            if self.game_paused:
+                self.resume()
+            else:
+                self.pause()
+        if self.k_restart.just_pressed:
+            self.start_game()
+        if not self.game_paused and move_command and not switch_command:
             if self.move_timer.finished:
                 if self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                                   desired_x, desired_y):
                     self.current_piece_x = desired_x
                     self.current_piece_y = desired_y
-                    self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                          self.current_piece_x, self.current_piece_y)
+                    self.move_piece()
                     self.move_timer.reset()
                     # Lock requests reset on move
                     if not self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                                           self.current_piece_x, self.current_piece_y - 1):
-
+                        self.last_move_name = "move"
                         self.request_lock()
                     else:
                         self.lock_requests = 0
-        if rotate_command:
+        if not self.game_paused and rotate_command and not switch_command:
             if self.rotation_timer.finished:
                 request = False
                 if self.game_field.can_show_piece(self.current_piece_type, desired_rotation,
                                                   self.current_piece_x, self.current_piece_y):
                     self.current_piece_rotation = Rotation(desired_rotation.get())
-                    self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                          self.current_piece_x, self.current_piece_y)
+                    self.move_piece()
                     self.rotation_timer.reset()
                     request = True
                 # Try wall kick
@@ -450,30 +578,28 @@ class PlayField(Listener, LogicObject):
                                                       self.current_piece_x - 1, self.current_piece_y):
                         self.current_piece_x -= 1
                         self.current_piece_rotation = Rotation(desired_rotation.get())
-                        self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                              self.current_piece_x, self.current_piece_y)
+                        self.move_piece()
                         self.rotation_timer.reset()
                         request = True
                     elif self.game_field.can_show_piece(self.current_piece_type, desired_rotation,
                                                         self.current_piece_x + 1, self.current_piece_y):
                         self.current_piece_x += 1
                         self.current_piece_rotation = Rotation(desired_rotation.get())
-                        self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                              self.current_piece_x, self.current_piece_y)
+                        self.move_piece()
                         self.rotation_timer.reset()
                         request = True
-                # Experimental floor kick
+                    # Experimental floor kick
                     elif self.game_field.can_show_piece(self.current_piece_type, desired_rotation,
                                                         self.current_piece_x, self.current_piece_y + 1):
                         self.current_piece_y += 1
                         self.current_piece_rotation = Rotation(desired_rotation.get())
-                        self.ghost_field.reset_and_show_piece(self.current_piece_type, self.current_piece_rotation,
-                                                              self.current_piece_x, self.current_piece_y)
+                        self.move_piece()
                         self.rotation_timer.reset()
                         request = True
                 if request:
                     if not self.ghost_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                                            self.current_piece_x, self.current_piece_y - 1):
+                        self.last_move_name = "rotate"
                         self.request_lock()
                     else:
                         self.lock_requests = 0
