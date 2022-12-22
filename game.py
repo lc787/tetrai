@@ -1,27 +1,30 @@
 import pygame as pg
 import commons
+import gameengine
+import grid
 from gamefield import GameField
-from gameengine import CanvasObject
+from gameengine import CanvasObject, Key
 
 
 def handle_input():
+    gameengine.KEYS = pg.key.get_pressed()
     for event in pg.event.get():
         match event.type:
             case pg.QUIT:
-                commons.game_running = False
+                gameengine.game_running = False
             case pg.KEYDOWN:
                 match event.key:
                     case pg.K_ESCAPE:
-                        commons.game_running = False
+                        gameengine.game_running = False
 
 
 def update(dt):
-    for obj in commons.LOGIC_OBJECTS:
+    for obj in gameengine.LOGIC_OBJECTS:
         obj.update(dt)
 
 
 def draw(screen: pg.Surface):
-    for obj in commons.CANVAS_OBJECTS:
+    for obj in gameengine.CANVAS_OBJECTS[::-1]:
         obj.draw()
         screen.blit(obj.image, obj.rect)
     pg.display.flip()
@@ -39,8 +42,15 @@ def init_objs():
     background = CanvasObject(0, 0, commons.width, commons.height)
     background.image.fill(commons.color_theme.background)
     background.draw_level = 0
-    game_field = GameField(commons.width // 3, - 0.75*commons.height, 10, 40, 24, 2)
-    game_field.draw_level = 1
+    cell_size = 24
+    cell_margin = 2
+    game_grid = grid.PlayField(commons.width // 2, commons.height // 2, 24, 2, commons.color_theme_default,
+                               play_field_offset=(-((cell_size + cell_margin) * 5 + cell_margin // 2),
+                                                  -((cell_size + cell_margin) * 30 + cell_margin // 2)),
+                               hold_field_offset=(-((cell_size + cell_margin) * 11 + cell_margin // 2),
+                                                  -((cell_size + cell_margin) * 10 + cell_margin // 2)),
+                               next_field_offset=(((cell_size + cell_margin) * 7 + cell_margin // 2),
+                                                  -((cell_size + cell_margin) * 10 + cell_margin // 2)))
 
 
 # Init app
