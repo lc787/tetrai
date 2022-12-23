@@ -1,4 +1,5 @@
 import pygame as pg
+
 from gameengine import Key
 
 width = 800
@@ -32,4 +33,17 @@ key_binds = {
     '180': Key(pg.K_p),
     'pause': Key(pg.K_ESCAPE),
     'restart': Key(pg.K_r),
+}
+
+agent_key_binds = {
+    'clockwise': Key(pg.K_e, input_mode="agent"),
+    'counter_clockwise': Key(pg.K_q, input_mode="agent"),
+    'switch': Key(pg.K_w, input_mode="agent"),
+    'hard_drop': Key(pg.K_SPACE, input_mode="agent"),
+    'soft_drop': Key(pg.K_DOWN, input_mode="agent"),
+    'left': Key(pg.K_LEFT, input_mode="agent"),
+    'right': Key(pg.K_RIGHT, input_mode="agent"),
+    '180': Key(pg.K_p, input_mode="agent"),
+    'pause': Key(pg.K_ESCAPE, input_mode="agent"),
+    'restart': Key(pg.K_r, input_mode="agent"),
 }
