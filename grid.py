@@ -2,6 +2,7 @@ import numpy as np
 import pygame as pg
 
 import commons
+import gameengine
 from gameengine import CanvasObject, Listener, Timer, LogicObject, Event, Notifier
 
 
@@ -208,14 +209,38 @@ class DisplayGrid(Grid, CanvasObject):
                                self.cell_size, self.cell_size)
                 pg.draw.rect(self.image, piece_color(piece_type, self.theme), rect)
 
+    def get_column_height(self, i):
+        """Get the height of the specified column. Safe"""
+        for y in range(self.rows - 1, 0, -1):
+            if self.get_safe(i, y) != 0:
+                return y
+        return 0
 
-class PlayField(Listener, LogicObject):
+    def get_column_holes(self, i, col_height=None):
+        """Get the number of holes of the specified column. Safe"""
+        holes = 0
+        height = col_height if col_height is not None else self.get_column_height(i)
+        for y in range(self.rows):
+            if self.get_safe(i, y) == 0:
+                if height > y:
+                    holes += 1
+        return holes
+
+
+class PlayField(Notifier, Listener, LogicObject):
     def __init__(self, x, y, block_size, block_margin, theme, key_map=commons.key_binds,
                  play_field_offset: tuple = (0, 0), hold_field_offset: tuple = (0, 0),
                  next_field_offset: tuple = (0, 0),
-                 environment=None):
+                 environment: Listener = None,
+                 # Score schemes. When designing, these should scale with the official tetris score guideline.
+                 # See https://tetris.wiki/Scoring. (also see set_score())
+                 # Positive values encourage the model to explore the action space.
+                 agent_score_scheme: dir = {'move_delta_score': 1, 'game_over_delta_score': -1000,
+                                            'non_line_clear_delta_score': 8},
+                 agent_mode=False):
         LogicObject.__init__(self)
         Listener.__init__(self)
+        Notifier.__init__(self)
         self.cols = 10
         self.rows = 40
         self.theme = theme
@@ -277,15 +302,24 @@ class PlayField(Listener, LogicObject):
         font = pg.font.SysFont('Arial', 20)
         score_render = font.render('Score: 0', True, theme['palette']['text'])
         delta_score_render = font.render('+0', True, theme['palette']['text'])
-        self.score_panel = CanvasObject(x-300, y, image=score_render)
+        self.score_panel = CanvasObject(x - 300, y, image=score_render)
         self.score_panel.draw_level = 5
-        self.delta_score_panel = CanvasObject(x-300, y+20, image=delta_score_render)
+        self.delta_score_panel = CanvasObject(x - 300, y + 20, image=delta_score_render)
         self.delta_score_panel.draw_level = 5
         self.delta_score_panel.invisible = True
         self.score = 0
+        # Last score change, used by Reinforcement Learning agents
+        self.last_delta_score = 0
+        # Score gained for any move
+        self.move_delta_score = agent_score_scheme['move_delta_score']
+        # Game lost score
+        self.game_over_delta_score = agent_score_scheme['game_over_delta_score']
+        self.non_line_clear_delta_score = agent_score_scheme['non_line_clear_delta_score']
         self.level = 1
         self.last_move_name = None
+        self.last_clear_name = None
         self.last_action = None
+        self.agent_mode = agent_mode
 
         # Pieces
         self.current_piece_type = None
@@ -298,6 +332,11 @@ class PlayField(Listener, LogicObject):
         self.fall_timer.connect(Event("timeout"), self, self.on_natural_drop_piece)
         self.lock_timer.connect(Event("timeout"), self, self.on_lock_delay)
         self.delta_points_render_timer.connect(Event("timeout"), self, self.on_delta_score_render_timeout)
+        if environment is not None:
+            if hasattr(environment, 'step'):
+                self.connect(Event("feature_batch"),
+                             environment, environment.step)
+
         # Connect clear lines event
         # self.connect(Event())
 
@@ -355,13 +394,18 @@ class PlayField(Listener, LogicObject):
                     lock_out = False
                 self.game_field.set(x, y, self.current_piece_type)
         if lock_out:
+            self.last_delta_score += self.game_over_delta_score
             self.game_over = True
+            self.notify(Event("game_over", features=self.fetch_features(0)))
             self.pause()
         else:
             rows = self.clean_rows()
-            if rows != 0:
-                self.set_score(rows, self.current_piece_type)
 
+            if rows != 0:
+                self.last_delta_score += self.set_score(rows, self.current_piece_type)
+            else:
+                self.last_delta_score += self.non_line_clear_delta_score
+            self.notify(Event("feature_batch", features=self.fetch_features(rows)))
             self.spawn_piece(piece_type=self.pop_bag())
 
     def on_delta_score_render_timeout(self, event: Event = None):
@@ -379,24 +423,24 @@ class PlayField(Listener, LogicObject):
         match rows:
             case 1:
                 delta_points = 100 * self.level
-                self.last_move_name = "Single"
+                self.last_clear_name = "Single"
             case 2:
                 delta_points = 300 * self.level
-                self.last_move_name = "Double"
+                self.last_clear_name = "Double"
             case 3:
                 delta_points = 500 * self.level
-                self.last_move_name = "Triple"
+                self.last_clear_name = "Triple"
             case 4:
-                if self.last_move_name == "Tetris" or self.last_move_name == "B2B Tetris":
+                if self.last_clear_name == "Tetris" or self.last_clear_name == "B2B Tetris":
                     delta_points = 1200 * self.level
-                    self.last_move_name = "B2B Tetris"
+                    self.last_clear_name = "B2B Tetris"
                 else:
                     delta_points = 800 * self.level
-                    self.last_move_name = "Tetris"
+                    self.last_clear_name = "Tetris"
         self.score += delta_points
-        self.score_panel.image = pg.font.SysFont('Arial', 20)\
+        self.score_panel.image = pg.font.SysFont('Arial', 20) \
             .render(f'Score: {self.score}', True, self.theme['palette']['text'])
-        self.delta_score_panel.image = pg.font.SysFont('Arial', 20)\
+        self.delta_score_panel.image = pg.font.SysFont('Arial', 20) \
             .render(f'+{delta_points}', True, self.theme['palette']['text'])
         self.delta_score_panel.invisible = False
         self.delta_points_render_timer.reset()
@@ -406,6 +450,8 @@ class PlayField(Listener, LogicObject):
         """Wrapper for normal & ghost piece placement"""
         # Ghost
         lowest_y = self.current_piece_y
+        # Add up and reset when locking
+        self.last_delta_score += self.move_delta_score
         while self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                              self.current_piece_x, lowest_y - 1):
             lowest_y -= 1
@@ -415,7 +461,7 @@ class PlayField(Listener, LogicObject):
         self.ghost_field.show_piece(self.current_piece_type, self.current_piece_rotation,
                                     self.current_piece_x, self.current_piece_y)
 
-    def on_natural_drop_piece(self, event: Event):
+    def on_natural_drop_piece(self, event: Event = None):
         """Gets called when the piece is supposed to fall. If there is no space left to fall, lock!"""
         if self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                           self.current_piece_x, self.current_piece_y - 1):
@@ -430,12 +476,13 @@ class PlayField(Listener, LogicObject):
         self.current_piece_y = self.rows // 2
         self.current_piece_rotation = Rotation(0)
         self.current_piece_type = piece_type
-
+        self.last_delta_score = 0
         self.move_piece()
 
     def start_game(self):
         # Init game
         self.score = 0
+        self.last_delta_score = 0
         self.game_started = True
         self.game_over = False
         self.level = 1
@@ -458,10 +505,14 @@ class PlayField(Listener, LogicObject):
         self.bag = []
         self.pop_bag()
 
+        self.game_paused = False
         self.hold_piece_type = None
-
+        self.last_move_name = None
+        self.last_clear_name = None
+        self.last_action = None
         # Spawn piece
         self.spawn_piece(self.pop_bag())
+        self.notify(Event("feature_batch", features=self.fetch_features(0)))
 
     def pause(self):
         self.fall_timer.pause()
@@ -496,6 +547,31 @@ class PlayField(Listener, LogicObject):
             self.lock_timer.reset()
             self.lock_timer.pause()
 
+    def fetch_features(self, rows_cleared):
+        """Features of environment for RL use. Call after every lock"""
+        features = {}
+        features['current_piece_type'] = self.current_piece_type
+        features['current_piece_rotation'] = self.current_piece_rotation
+        features['current_piece_x'] = self.current_piece_x
+        features['current_piece_y'] = self.current_piece_y
+        features['game_field'] = self.game_field
+        features['score'] = self.score
+        # From game grid, fetch height of each column
+        features['column_heights'] = [self.game_field.get_column_height(i) for i in range(self.cols)]
+        features['column_holes'] = [self.game_field.get_column_holes(i, features['column_heights'][i])
+                                    for i in range(self.cols)]
+        features['total_holes'] = sum(features['column_holes'])
+        # A measure of bumpiness (the sum of the absolute differences between adjacent columns)
+        features['total_bumpiness'] = sum([abs(features['column_heights'][i] - features['column_heights'][i + 1])
+                                           for i in range(self.cols - 1)])
+        features['max_height'] = max(features['column_heights'])
+        features['min_height'] = min(features['column_heights'])
+        features['next_piece_type'] = self.bag[0]
+        features['hold_piece_type'] = self.hold_piece_type
+        features['reward'] = self.last_delta_score
+        features['lines_cleared'] = rows_cleared
+        return features
+
     def update(self, dt: float):
         desired_x = self.current_piece_x
         desired_y = self.current_piece_y
@@ -503,33 +579,37 @@ class PlayField(Listener, LogicObject):
         move_command = False
         rotate_command = False
         switch_command = False
-        if self.k_soft_drop.pressed:
+        agent_key = None
+        if self.agent_mode:
+            # Get action from agent queue
+            agent_key = gameengine.AGENT_KEY_QUEUE.get_key()
+        if self.agent_mode and agent_key == "soft_drop" or self.k_soft_drop.pressed:
             desired_y -= 1
             move_command = True
-        if self.k_left.pressed:
+        if self.agent_mode and agent_key == "left" or self.k_left.pressed:
             desired_x -= 1
             move_command = True
-        if self.k_right.pressed:
+        if self.agent_mode and agent_key == "right" or self.k_right.pressed:
             desired_x += 1
             move_command = True
-        if self.k_clockwise.just_pressed:
+        if self.agent_mode and agent_key == "clockwise" or self.k_clockwise.just_pressed:
             desired_rotation.set_clockwise()
             rotate_command = True
-        if self.k_counter_clockwise.just_pressed:
+        if self.agent_mode and agent_key == "counter_clockwise" or self.k_counter_clockwise.just_pressed:
             desired_rotation.set_counter_clockwise()
             rotate_command = True
-        if self.k_180.just_pressed:
+        if self.agent_mode and agent_key == "180" or self.k_180.just_pressed:
             desired_rotation.set_clockwise()
             desired_rotation.set_clockwise()
             rotate_command = True
-        if not self.game_paused and self.k_hard_drop.just_pressed:
+        if not self.game_paused and (self.agent_mode and agent_key == "hard_drop" or self.k_hard_drop.just_pressed):
             while self.game_field.can_show_piece(self.current_piece_type, self.current_piece_rotation,
                                                  self.current_piece_x, self.current_piece_y - 1):
                 self.current_piece_y -= 1
             self.last_move_name = "hard_drop"
             self.lock_piece()
 
-        elif not self.game_paused and self.k_switch.just_pressed and self.can_switch:
+        elif not self.game_paused and (self.agent_mode and agent_key == "switch" or self.k_switch.just_pressed) and self.can_switch:
             self.can_switch = False
             if self.hold_piece_type is None:
                 self.hold_piece_type = self.current_piece_type
@@ -541,12 +621,12 @@ class PlayField(Listener, LogicObject):
                 self.hold_field.reset_and_show_piece(self.hold_piece_type, Rotation(0), 0, 0)
                 self.spawn_piece(self.current_piece_type)
             switch_command = True
-        if self.k_pause.just_pressed:
+        if self.agent_mode and agent_key == "pause" or self.k_pause.just_pressed:
             if self.game_paused:
                 self.resume()
             else:
                 self.pause()
-        if self.k_restart.just_pressed:
+        if self.agent_mode and agent_key == "restart" or self.k_restart.just_pressed:
             self.start_game()
         if not self.game_paused and move_command and not switch_command:
             if self.move_timer.finished:
