@@ -1,11 +1,23 @@
 from pygame import Surface, Rect, image
-
-import commons
-
+import pygame as pg
+FIELD = None
 LOGIC_OBJECTS = []
 # Draw order is maintained by the draw_level property
 CANVAS_OBJECTS = []
+# Human, keyboard input
 KEYS = []
+# AI, neural network input
+AGENT_KEYS = {pg.K_e: False,
+              pg.K_q: False,
+              pg.K_w: False,
+              pg.K_SPACE: False,
+              pg.K_DOWN: False,
+              pg.K_LEFT: False,
+              pg.K_RIGHT: False,
+              pg.K_p: False,
+              pg.K_ESCAPE: False,
+              pg.K_r: False}
+AGENT_KEY_QUEUE = None
 NOTIFIERS = {}
 """ Contains notifiers by id """
 # Example: {'1': {'1': [method1, method2]}
@@ -68,15 +80,14 @@ class Notifier:
             self.notifier_id = int(max(NOTIFIERS.keys())) + 1
         NOTIFIERS[self.notifier_id] = {}
 
-    def notify(self, event: Event = Event()):
+    def notify(self, event: Event):
         """Notifies all subscribed listeners"""
         items = NOTIFIERS[self.notifier_id].items()
         for listener_id, methods in items:
             listener = LISTENERS[listener_id]
             if listener is not None:
                 for method in methods:
-                    method(listener)
-
+                    method(event=event)
     def connect(self, event: Event, listener, method):
         if listener.listener_id not in NOTIFIERS[self.notifier_id].keys():
             NOTIFIERS[self.notifier_id][listener.listener_id] = [method]
@@ -140,14 +151,19 @@ class Timer(Notifier, LogicObject):
 class Key(LogicObject):
     """Describes state of key"""
 
-    def __init__(self, key_id: int):
+    def __init__(self, key_id: int, input_mode="human"):
         self.key_id = key_id
         self.pressed = False
         self.just_pressed = False
+        self.input_mode = input_mode
         LogicObject.__init__(self)
 
     def update(self, dt: float):
-        if KEYS[self.key_id]:
+        if self.input_mode == "agent":
+            key_status = AGENT_KEYS[self.key_id]
+        elif self.input_mode == "human":
+            key_status = KEYS[self.key_id]
+        if key_status:
             if not self.pressed:
                 self.just_pressed = True
             else:
